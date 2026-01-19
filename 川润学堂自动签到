@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         川润学堂自动签到 (定时双签到版)
 // @namespace    https://oa.sccrun.com/
-// @version      8.3
+// @version      8.31
 // @description  早上9:00和下午17:30各签到一次，不检查当天是否已签到
-// @author       川润学堂签到助手
+// @author       太初
 // @match        https://oa.sccrun.com/wui/index.html*
 // @match        https://wp4ibmcqaaz02katf2ziqx720ufxp28w.study.moxueyuan.com/shopMall*
 // @grant        GM_notification
