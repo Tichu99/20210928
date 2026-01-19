@@ -1,0 +1,1286 @@
+// ==UserScript==
+// @name         川润学堂自动签到 (定时双签到版)
+// @namespace    https://oa.sccrun.com/
+// @version      8.3
+// @description  早上9:00和下午17:30各签到一次，不检查当天是否已签到
+// @author       川润学堂签到助手
+// @match        https://oa.sccrun.com/wui/index.html*
+// @match        https://wp4ibmcqaaz02katf2ziqx720ufxp28w.study.moxueyuan.com/shopMall*
+// @grant        GM_notification
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_openInTab
+// @grant        GM_addStyle
+// @run-at       document-end
+// @license      MIT
+// ==/UserScript==
+
+(function() {
+    'use strict';
+    
+    // ========== 配置 ==========
+    const CONFIG = {
+        // 页面URL
+        oaPage: 'https://oa.sccrun.com/wui/index.html?#/main/workflow/listDoing?menuIds=1,13&menuPathIds=1,13&_key=w655ua',
+        checkInPage: 'https://wp4ibmcqaaz02katf2ziqx720ufxp28w.study.moxueyuan.com/shopMall',
+        
+        // XPath路径 - 使用稳定的定位方式
+        signButtonXPath: '/html/body/div[2]/div/section/main/div/div[1]/div[2]/div[2]/div[2]/div[2]/div[1]/div[2]',
+        
+        // 翻牌按钮的多种定位方式（根据你的HTML优化）
+        flipButtonSelectors: [
+            // 直接通过类名查找（最重要！）
+            '.draw-sign-btn.cursor_pointer.zh_cn',
+            '.draw-sign-btn',
+            '[class*="draw-sign-btn"]',
+            
+            // 通过XPath模式匹配
+            '//div[contains(@class,"draw-sign-btn")]',
+            '//div[@class="draw-sign-btn cursor_pointer zh_cn"]',
+            '/html/body/div[8]/div/div[2]/div/div[3]/div', // 你提供的XPath
+            
+            // 通过弹窗结构查找
+            '.ant-modal-content .draw-sign-btn',
+            '.el-dialog__body .draw-sign-btn',
+            '.modal-content .draw-sign-btn',
+            '[data-v-126c4015]', // 根据你的HTML中的属性
+            
+            // 原始版本的选择器（保留）
+            'div:contains("立即翻牌")',
+            'button:contains("立即翻牌")',
+            'span:contains("立即翻牌")',
+            'a:contains("立即翻牌")',
+            '.ant-btn:contains("立即翻牌")',
+            '.el-button:contains("立即翻牌")',
+            '.btn:contains("立即翻牌")',
+        ],
+        
+        // 按钮文本
+        signButtonText: '去签到',
+        flipButtonText: '立即翻牌',
+        
+        // 签到成功关键词（扩大范围）
+        successKeywords: [
+            '签到成功',
+            '获得积分',
+            '翻牌成功',
+            '恭喜获得',
+            '已签到',
+            '签到完成',
+            '获得奖励',
+            '翻牌奖励',
+            '成功签到',
+            '领取成功',
+            '谢谢参与',  // 有些抽奖会有"谢谢参与"
+            '奖励已发放',
+            '已领取',
+            '今日已签',
+            '已翻牌'
+        ],
+        
+        // 调试设置
+        debug: true,
+        enableAutoClose: true, // 自动关闭功能
+        maxRetries: 8,
+        retryDelay: 2000,
+        waitForPopup: 10000, // 延长等待弹窗时间
+        
+        // 时间设置 - 早上9:00和下午17:30各签到一次
+        morningHour: 9,
+        morningMinute: 0,
+        afternoonHour: 17,
+        afternoonMinute: 30
+    };
+    
+    // ========== 全局状态 ==========
+    let logs = [];
+    let currentStep = 'idle';
+    let checkInAttempts = 0;
+    let mutationObserver = null;
+    let isManualCheckIn = false; // 标记是否为手动签到
+    
+    // ========== 日志系统 ==========
+    function log(...args) {
+        const timestamp = new Date().toLocaleTimeString();
+        const message = args.map(arg => {
+            if (typeof arg === 'object') {
+                try {
+                    return JSON.stringify(arg);
+                } catch {
+                    return String(arg);
+                }
+            }
+            return String(arg);
+        }).join(' ');
+        
+        const fullMessage = `[${timestamp}] ${message}`;
+        logs.push(fullMessage);
+        if (logs.length > 150) logs.shift();
+        
+        if (CONFIG.debug) {
+            console.log(`%c[川润定时版]`, 'background: #9C27B0; color: white; padding: 2px 5px; border-radius: 3px;', ...args);
+        }
+        
+        updateLogPanel();
+        
+        return fullMessage;
+    }
+    
+    // ========== 日志面板 ==========
+    function createLogPanel() {
+        const existingPanel = document.getElementById('chuanrun-log-panel');
+        if (existingPanel) existingPanel.remove();
+        
+        const panel = document.createElement('div');
+        panel.id = 'chuanrun-log-panel';
+        panel.style.cssText = `
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            width: 550px;
+            height: 400px;
+            background: rgba(0, 0, 0, 0.95);
+            color: #E1BEE7;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            z-index: 100000;
+            border: 3px solid #9C27B0;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(156, 39, 176, 0.5);
+            resize: both;
+        `;
+        
+        panel.innerHTML = `
+            <div style="background: linear-gradient(90deg, #9C27B0, #7B1FA2); color: white; padding: 8px 12px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; cursor: move;">
+                <span>📋 签到日志 - 定时版</span>
+                <div style="display: flex; align-items: center;">
+                    <span id="current-step" style="margin-right: 10px; font-size: 11px; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">准备中</span>
+                    <button id="copy-logs" title="复制日志" style="margin-right: 5px; padding: 3px 8px; background: #7B1FA2; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">复制</button>
+                    <button id="close-panel" title="关闭面板" style="padding: 3px 8px; background: #666; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">×</button>
+                </div>
+            </div>
+            <div id="log-content" style="padding: 10px; height: calc(100% - 40px); overflow-y: auto; line-height: 1.4; white-space: pre-wrap; font-size: 11px;"></div>
+        `;
+        
+        document.body.appendChild(panel);
+        
+        document.getElementById('copy-logs').addEventListener('click', copyLogs);
+        document.getElementById('close-panel').addEventListener('click', () => panel.remove());
+        
+        makeDraggable(panel, panel.firstElementChild);
+        
+        updateLogPanel();
+        updateStepDisplay();
+        
+        return panel;
+    }
+    
+    function updateLogPanel() {
+        const logContent = document.getElementById('log-content');
+        if (logContent) {
+            logContent.textContent = logs.join('\n');
+            logContent.scrollTop = logContent.scrollHeight;
+        }
+    }
+    
+    function updateStepDisplay() {
+        const stepElement = document.getElementById('current-step');
+        if (stepElement) {
+            const stepText = {
+                'idle': '🟣 准备中',
+                'finding_sign': '🔍 查找签到按钮',
+                'clicking_sign': '🖱️ 点击去签到',
+                'waiting_popup': '⏳ 等待弹窗',
+                'finding_flip': '🔍 查找翻牌按钮',
+                'clicking_flip': '🖱️ 点击立即翻牌',
+                'checking_result': '📊 检查结果',
+                'completed': '✅ 完成'
+            }[currentStep] || currentStep;
+            
+            stepElement.textContent = stepText;
+        }
+    }
+    
+    function setStep(step) {
+        currentStep = step;
+        log(`[状态] ${step}`);
+        updateStepDisplay();
+    }
+    
+    function copyLogs() {
+        const text = logs.join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            showNotification('成功', '日志已复制到剪贴板', 'success');
+        }).catch(err => {
+            console.error('复制失败:', err);
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            showNotification('成功', '日志已复制到剪贴板', 'success');
+        });
+    }
+    
+    function makeDraggable(element, handle) {
+        let isDragging = false;
+        let startX, startY, startLeft, startTop;
+        
+        handle.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            
+            const rect = element.getBoundingClientRect();
+            startLeft = rect.left;
+            startTop = rect.top;
+            
+            e.preventDefault();
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+            
+            element.style.left = (startLeft + deltaX) + 'px';
+            element.style.top = (startTop + deltaY) + 'px';
+            element.style.right = 'auto';
+            element.style.bottom = 'auto';
+        });
+        
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+    }
+    
+    // ========== 通知函数 ==========
+    function showNotification(title, message, type = 'info') {
+        log(`通知: ${title} - ${message}`);
+        
+        if (typeof GM_notification !== 'undefined') {
+            GM_notification({
+                title: title,
+                text: message,
+                timeout: 5000,
+                onclick: () => window.focus()
+            });
+        }
+        
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed;
+            top: 60px;
+            right: 20px;
+            background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#F44336' : '#9C27B0'};
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            z-index: 99999;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+            animation: slideIn 0.3s ease-out;
+            max-width: 400px;
+            border-left: 5px solid ${type === 'success' ? '#2E7D32' : type === 'error' ? '#C62828' : '#7B1FA2'};
+        `;
+        notification.innerHTML = `
+            <div style="font-weight: bold; margin-bottom: 5px; display: flex; align-items: center;">
+                <span style="margin-right: 8px;">${type === 'success' ? '✅' : type === 'error' ? '❌' : 'ℹ️'}</span>
+                <span>${title}</span>
+            </div>
+            <div>${message}</div>
+        `;
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.style.opacity = '0';
+            notification.style.transform = 'translateX(20px)';
+            setTimeout(() => {
+                if (notification.parentNode) notification.remove();
+            }, 300);
+        }, 4500);
+    }
+    
+    // ========== 存储管理 ==========
+    // 注释掉了当天签到检查功能，但保留存储函数以防其他用途
+    function getTodayKey() {
+        const today = new Date();
+        return `checked_${today.getFullYear()}_${today.getMonth() + 1}_${today.getDate()}`;
+    }
+    
+    // ========== 元素查找函数 ==========
+    function findElementByXPath(xpath) {
+        try {
+            const result = document.evaluate(
+                xpath,
+                document,
+                null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                null
+            );
+            return result.singleNodeValue;
+        } catch (error) {
+            log(`XPath错误: ${error.message}`);
+            return null;
+        }
+    }
+    
+    // ========== 优化的翻牌按钮查找函数 ==========
+    function findFlipButton() {
+        log(`🔍 查找"立即翻牌"按钮...`);
+        
+        // 方法1: 直接通过类名查找（最重要！）
+        log(`方法1: 通过类名查找 (.draw-sign-btn.cursor_pointer.zh_cn)`);
+        try {
+            const buttonByClass = document.querySelector('.draw-sign-btn.cursor_pointer.zh_cn');
+            if (buttonByClass) {
+                log(`✅ 通过类名找到按钮: ${buttonByClass.outerHTML.substring(0, 100)}`);
+                if (isElementVisible(buttonByClass) && isElementClickable(buttonByClass)) {
+                    return buttonByClass;
+                }
+            }
+        } catch (error) {
+            log(`⚠️ 类名查找出错: ${error.message}`);
+        }
+        
+        // 方法2: 遍历所有选择器
+        log(`方法2: 遍历${CONFIG.flipButtonSelectors.length}个选择器`);
+        for (const selector of CONFIG.flipButtonSelectors) {
+            try {
+                let elements = [];
+                
+                if (selector.startsWith('//')) {
+                    // XPath选择器
+                    const xpathResult = document.evaluate(
+                        selector,
+                        document,
+                        null,
+                        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                        null
+                    );
+                    for (let i = 0; i < xpathResult.snapshotLength; i++) {
+                        elements.push(xpathResult.snapshotItem(i));
+                    }
+                } else {
+                    // CSS选择器
+                    elements = Array.from(document.querySelectorAll(selector));
+                }
+                
+                if (elements.length > 0) {
+                    log(`🔍 选择器 "${selector}" 找到 ${elements.length} 个元素`);
+                    
+                    // 返回第一个可见且可点击的元素
+                    for (const element of elements) {
+                        if (isElementVisible(element) && isElementClickable(element)) {
+                            log(`✅ 找到可用按钮: ${element.tagName}.${element.className}`);
+                            
+                            // 如果是div元素，检查是否看起来像按钮
+                            if (element.tagName.toLowerCase() === 'div') {
+                                const style = window.getComputedStyle(element);
+                                const hasPointer = style.cursor === 'pointer';
+                                const hasSize = element.offsetWidth > 50 && element.offsetHeight > 20;
+                                
+                                if (hasPointer && hasSize) {
+                                    log(`🎯 确认这是一个可点击的div按钮`);
+                                    return element;
+                                }
+                            } else {
+                                return element;
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // 忽略选择器错误
+            }
+        }
+        
+        // 方法3: 查找所有弹窗，然后在弹窗内查找
+        log(`方法3: 在所有弹窗内查找`);
+        const allModals = document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popup"], [role="dialog"]');
+        log(`找到 ${allModals.length} 个可能的弹窗`);
+        
+        for (const modal of allModals) {
+            if (isElementVisible(modal)) {
+                log(`检查弹窗: ${modal.className}`);
+                
+                // 在弹窗内查找draw-sign-btn类
+                const flipButtons = modal.querySelectorAll('.draw-sign-btn, [class*="draw-sign-btn"]');
+                if (flipButtons.length > 0) {
+                    for (const button of flipButtons) {
+                        if (isElementVisible(button) && isElementClickable(button)) {
+                            log(`✅ 在弹窗中找到按钮: ${button.className}`);
+                            return button;
+                        }
+                    }
+                }
+                
+                // 原始方法：通过文本查找
+                const buttons = modal.querySelectorAll('button, a, div, span');
+                for (const button of buttons) {
+                    if (button.textContent && button.textContent.includes(CONFIG.flipButtonText)) {
+                        if (isElementVisible(button)) {
+                            log(`✅ 在弹窗中通过文本找到按钮: ${button.tagName}.${button.className}`);
+                            return button;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 方法4: 查找所有具有data-v-126c4015属性的元素（根据你的HTML）
+        log(`方法4: 查找data-v-126c4015属性`);
+        const vueElements = document.querySelectorAll('[data-v-126c4015]');
+        for (const element of vueElements) {
+            if (element.classList.contains('draw-sign-btn') && isElementVisible(element)) {
+                log(`✅ 找到Vue组件按钮: ${element.className}`);
+                return element;
+            }
+        }
+        
+        // 方法5: 原始方法：通过文本内容查找
+        log(`方法5: 通过文本"${CONFIG.flipButtonText}"查找`);
+        const allElements = document.querySelectorAll('*');
+        const textMatches = [];
+        
+        for (const element of allElements) {
+            if (element.textContent && element.textContent.trim() === CONFIG.flipButtonText) {
+                textMatches.push(element);
+            }
+        }
+        
+        log(`通过文本找到 ${textMatches.length} 个匹配元素`);
+        
+        // 筛选可见且可点击的元素
+        for (const element of textMatches) {
+            if (isElementVisible(element) && isElementClickable(element)) {
+                log(`✅ 通过文本找到可见可点击的按钮: ${element.tagName}.${element.className}`);
+                return element;
+            }
+        }
+        
+        log(`未找到"立即翻牌"按钮`);
+        return null;
+    }
+    
+    // ========== DOM监听器（动态加载按钮） ==========
+    function setupDOMObserver() {
+        if (mutationObserver) return;
+        
+        mutationObserver = new MutationObserver((mutations) => {
+            let foundButton = false;
+            
+            for (const mutation of mutations) {
+                if (mutation.addedNodes && mutation.addedNodes.length > 0) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === 1) { // 元素节点
+                            // 检查新添加的元素
+                            if (node.matches && node.matches('.draw-sign-btn.cursor_pointer.zh_cn')) {
+                                log(`🎯 DOM监听器: 检测到新添加的翻牌按钮`);
+                                foundButton = true;
+                                if (isElementVisible(node)) {
+                                    log(`✅ 按钮已显示，准备点击`);
+                                    setTimeout(() => {
+                                        clickFlipButton(node);
+                                    }, 500);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (foundButton) {
+                // 停止监听
+                mutationObserver.disconnect();
+            }
+        });
+        
+        mutationObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+        
+        log(`👁️ DOM监听器已启动，等待动态加载的按钮`);
+        
+        // 30秒后自动停止监听
+        setTimeout(() => {
+            if (mutationObserver) {
+                mutationObserver.disconnect();
+                log(`⏰ DOM监听器已超时停止`);
+            }
+        }, 30000);
+    }
+    
+    function isElementVisible(element) {
+        if (!element) return false;
+        
+        const style = window.getComputedStyle(element);
+        const isVisible = style.display !== 'none' &&
+                         style.visibility !== 'hidden' &&
+                         style.opacity !== '0' &&
+                         element.offsetWidth > 0 &&
+                         element.offsetHeight > 0;
+        
+        // 检查是否在视口内
+        const rect = element.getBoundingClientRect();
+        const inViewport = rect.top >= 0 &&
+                          rect.left >= 0 &&
+                          rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+                          rect.right <= (window.innerWidth || document.documentElement.clientWidth);
+        
+        return isVisible && inViewport;
+    }
+    
+    function isElementClickable(element) {
+        if (!element) return false;
+        
+        const tagName = element.tagName.toLowerCase();
+        const isClickableTag = ['button', 'a', 'input', 'select', 'textarea'].includes(tagName);
+        const hasOnClick = element.hasAttribute('onclick') || element.onclick;
+        const hasRoleButton = element.getAttribute('role') === 'button';
+        const hasHref = element.hasAttribute('href');
+        const style = window.getComputedStyle(element);
+        const hasPointerCursor = style.cursor === 'pointer';
+        
+        return (isClickableTag || hasOnClick || hasRoleButton || hasHref || hasPointerCursor) &&
+               !element.disabled &&
+               !element.classList.contains('disabled');
+    }
+    
+    // ========== 点击函数 ==========
+    function clickElement(element, description) {
+        if (!element) {
+            log(`❌ ${description}: 元素不存在`);
+            return false;
+        }
+        
+        if (!isElementVisible(element)) {
+            log(`⚠️ ${description}: 元素不可见，强制尝试点击`);
+            // 即使不可见也尝试点击（有些按钮可能被隐藏但可点击）
+        }
+        
+        // 高亮元素
+        element.style.boxShadow = '0 0 0 3px #FF9800';
+        element.style.transition = 'all 0.3s';
+        
+        // 记录原始背景色
+        const originalBackground = element.style.backgroundColor;
+        const originalColor = element.style.color;
+        element.style.backgroundColor = '#4CAF50';
+        element.style.color = 'white';
+        
+        log(`🖱️ ${description}: 尝试点击`);
+        
+        // 方法1: 直接click()
+        try {
+            element.click();
+            log(`✅ ${description}: click()成功`);
+            
+            // 恢复样式
+            setTimeout(() => {
+                element.style.backgroundColor = originalBackground;
+                element.style.color = originalColor;
+            }, 1000);
+            
+            return true;
+        } catch (error) {
+            log(`❌ ${description}: click()失败 - ${error.message}`);
+        }
+        
+        // 方法2: 触发鼠标事件
+        try {
+            const event = new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true
+            });
+            element.dispatchEvent(event);
+            log(`✅ ${description}: MouseEvent成功`);
+            
+            setTimeout(() => {
+                element.style.backgroundColor = originalBackground;
+                element.style.color = originalColor;
+            }, 1000);
+            
+            return true;
+        } catch (error) {
+            log(`❌ ${description}: MouseEvent失败 - ${error.message}`);
+        }
+        
+        // 方法3: 触发完整鼠标事件序列
+        try {
+            ['mousedown', 'mouseup', 'click'].forEach(eventType => {
+                const event = new MouseEvent(eventType, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                });
+                element.dispatchEvent(event);
+            });
+            log(`✅ ${description}: 完整鼠标事件成功`);
+            
+            setTimeout(() => {
+                element.style.backgroundColor = originalBackground;
+                element.style.color = originalColor;
+            }, 1000);
+            
+            return true;
+        } catch (error) {
+            log(`❌ ${description}: 完整鼠标事件失败 - ${error.message}`);
+        }
+        
+        // 方法4: 使用JavaScript点击（新增）
+        try {
+            element.dispatchEvent(new Event('click', { bubbles: true }));
+            log(`✅ ${description}: JavaScript事件成功`);
+            
+            setTimeout(() => {
+                element.style.backgroundColor = originalBackground;
+                element.style.color = originalColor;
+            }, 1000);
+            
+            return true;
+        } catch (error) {
+            log(`❌ ${description}: JavaScript事件失败 - ${error.message}`);
+        }
+        
+        // 恢复样式
+        element.style.backgroundColor = originalBackground;
+        element.style.color = originalColor;
+        
+        return false;
+    }
+    
+    // ========== 自动关闭函数 ==========
+    function autoClosePage() {
+        if (!CONFIG.enableAutoClose) {
+            log('⏹️ 自动关闭功能已禁用，不关闭页面');
+            return;
+        }
+        
+        if (isManualCheckIn) {
+            log('⏹️ 手动签到，不自动关闭页面');
+            return;
+        }
+        
+        log('🔄 准备自动关闭签到页面...');
+        
+        // 延迟3秒关闭，让用户看到签到成功的消息
+        setTimeout(() => {
+            try {
+                // 尝试使用window.close()关闭页面
+                if (window.close && typeof window.close === 'function') {
+                    log('✅ 尝试关闭当前标签页');
+                    window.close();
+                    
+                    // 如果页面没有关闭，可能是浏览器限制，尝试其他方法
+                    setTimeout(() => {
+                        // 检查页面是否仍然打开
+                        log('⚠️ 页面可能未被关闭，尝试其他方法');
+                        
+                        // 方法2: 重定向到空白页，然后关闭
+                        if (window.history.length > 1) {
+                            log('↩️ 尝试返回上一页');
+                            window.history.back();
+                            setTimeout(() => {
+                                if (window.close && typeof window.close === 'function') {
+                                    window.close();
+                                }
+                            }, 1000);
+                        } else {
+                            log('🏠 尝试跳转到主页');
+                            window.location.href = 'about:blank';
+                            setTimeout(() => {
+                                if (window.close && typeof window.close === 'function') {
+                                    window.close();
+                                }
+                            }, 1000);
+                        }
+                    }, 2000);
+                } else {
+                    log('❌ window.close()不可用');
+                }
+            } catch (error) {
+                log(`❌ 关闭页面时出错: ${error.message}`);
+            }
+        }, 3000);
+    }
+    
+    // ========== 签到页面逻辑 ==========
+    const isOAPage = window.location.href.includes('oa.sccrun.com');
+    const isCheckInPage = window.location.href.includes('/shopMall');
+    
+    if (isCheckInPage) {
+        log('🎯 检测到签到页面 - 定时版启动');
+        
+        // 添加CSS样式
+        GM_addStyle(`
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes buttonPulse {
+                0% { box-shadow: 0 0 0 0 rgba(156, 39, 176, 0.7); }
+                70% { box-shadow: 0 0 0 15px rgba(156, 39, 176, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(156, 39, 176, 0); }
+            }
+            @keyframes highlightButton {
+                0% { box-shadow: 0 0 0 0 rgba(255, 87, 34, 0.7); }
+                70% { box-shadow: 0 0 0 20px rgba(255, 87, 34, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(255, 87, 34, 0); }
+            }
+            .sign-btn-found {
+                animation: buttonPulse 2s infinite !important;
+                border: 3px solid #9C27B0 !important;
+                position: relative !important;
+                z-index: 9999 !important;
+            }
+            .sign-btn-found::after {
+                content: "🎯 去签到";
+                position: absolute;
+                top: -35px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #9C27B0;
+                color: white;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                white-space: nowrap;
+                z-index: 10000;
+            }
+            .flip-btn-found {
+                animation: highlightButton 1.5s infinite !important;
+                border: 3px solid #4CAF50 !important;
+                position: relative !important;
+                z-index: 10001 !important;
+            }
+            .flip-btn-found::after {
+                content: "🃏 立即翻牌";
+                position: absolute;
+                top: -35px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: #4CAF50;
+                color: white;
+                padding: 5px 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                white-space: nowrap;
+                z-index: 10002;
+            }
+        `);
+        
+        // 创建日志面板
+        setTimeout(createLogPanel, 1000);
+        
+        // ========== 主签到流程 ==========
+        function startCheckInProcess() {
+            log('\n========== 开始签到流程 ==========');
+            
+            checkInAttempts++;
+            
+            if (checkInAttempts > CONFIG.maxRetries) {
+                log(`❌ 达到最大重试次数 (${CONFIG.maxRetries})`);
+                showNotification('签到失败', '已达到最大重试次数，请手动签到', 'error');
+                setStep('completed');
+                return;
+            }
+            
+            log(`🔄 第 ${checkInAttempts} 次尝试`);
+            
+            // 第一步：查找并点击"去签到"按钮
+            findAndClickSignButton();
+        }
+        
+        // 第一步：查找并点击"去签到"按钮
+        function findAndClickSignButton() {
+            setStep('finding_sign');
+            
+            log(`🔍 查找"去签到"按钮`);
+            const signButton = findElementByXPath(CONFIG.signButtonXPath);
+            
+            if (!signButton) {
+                log(`❌ 未找到"去签到"按钮`);
+                
+                // 备用方法：通过文本查找
+                const allElements = document.querySelectorAll('*');
+                let foundButton = null;
+                
+                for (const element of allElements) {
+                    if (element.textContent && element.textContent.trim() === CONFIG.signButtonText) {
+                        if (isElementVisible(element)) {
+                            foundButton = element;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!foundButton) {
+                    log(`❌ 备用方法也未找到按钮`);
+                    
+                    // 重试
+                    setTimeout(() => {
+                        log(`⏰ ${CONFIG.retryDelay/1000}秒后重试`);
+                        findAndClickSignButton();
+                    }, CONFIG.retryDelay);
+                    return;
+                }
+                
+                log(`✅ 通过备用方法找到按钮`);
+                clickSignButton(foundButton);
+                return;
+            }
+            
+            log(`✅ 通过XPath找到"去签到"按钮`);
+            clickSignButton(signButton);
+        }
+        
+        function clickSignButton(button) {
+            // 检查按钮状态
+            if (button.disabled || button.classList.contains('disabled')) {
+                log(`✅ 按钮已禁用，今天已签到`);
+                showNotification('签到成功', '今天已经签到过了！', 'success');
+                setStep('completed');
+                
+                // 自动关闭页面
+                autoClosePage();
+                return;
+            }
+            
+            // 高亮显示
+            button.classList.add('sign-btn-found');
+            
+            // 点击按钮
+            setStep('clicking_sign');
+            
+            setTimeout(() => {
+                const clicked = clickElement(button, '点击"去签到"按钮');
+                
+                if (clicked) {
+                    log(`✅ "去签到"按钮点击成功`);
+                    
+                    // 等待弹窗出现
+                    setTimeout(() => {
+                        waitForPopupAndClickFlip();
+                    }, 1500);
+                } else {
+                    log(`❌ "去签到"按钮点击失败`);
+                    
+                    // 重试
+                    setTimeout(() => {
+                        log(`⏰ ${CONFIG.retryDelay/1000}秒后重试`);
+                        findAndClickSignButton();
+                    }, CONFIG.retryDelay);
+                }
+            }, 1000);
+        }
+        
+        // 第二步：等待弹窗并点击"立即翻牌"
+        function waitForPopupAndClickFlip() {
+            setStep('waiting_popup');
+            
+            log(`⏳ 等待弹窗出现...`);
+            
+            // 先等待一段固定时间，让弹窗完全加载
+            setTimeout(() => {
+                log(`🔍 开始查找翻牌按钮`);
+                
+                // 启动DOM监听器（处理动态加载的按钮）
+                setupDOMObserver();
+                
+                let attempts = 0;
+                const maxAttempts = CONFIG.waitForPopup / 500; // 每500ms尝试一次
+                
+                const searchInterval = setInterval(() => {
+                    attempts++;
+                    
+                    if (attempts % 4 === 0) {
+                        log(`等待中... ${attempts * 500}ms`);
+                    }
+                    
+                    // 查找翻牌按钮
+                    const flipButton = findFlipButton();
+                    
+                    if (flipButton) {
+                        clearInterval(searchInterval);
+                        
+                        // 确保DOM监听器已停止
+                        if (mutationObserver) {
+                            mutationObserver.disconnect();
+                            mutationObserver = null;
+                        }
+                        
+                        log(`🎯 找到翻牌按钮，准备点击`);
+                        
+                        // 再次检查按钮状态
+                        setTimeout(() => {
+                            clickFlipButton(flipButton);
+                        }, 500);
+                        return;
+                    }
+                    
+                    // 超时检查
+                    if (attempts >= maxAttempts) {
+                        clearInterval(searchInterval);
+                        log(`❌ 等待翻牌按钮超时 (${CONFIG.waitForPopup}ms)`);
+                        
+                        // 停止DOM监听器
+                        if (mutationObserver) {
+                            mutationObserver.disconnect();
+                            mutationObserver = null;
+                        }
+                        
+                        // 检查是否已经签到成功
+                        setTimeout(() => {
+                            checkFinalResult();
+                        }, 1000);
+                    }
+                }, 500);
+                
+                // 同时添加一个一次性检查，应对按钮立即出现的情况
+                setTimeout(() => {
+                    const immediateButton = findFlipButton();
+                    if (immediateButton) {
+                        clearInterval(searchInterval);
+                        log(`✅ 立即找到按钮`);
+                        clickFlipButton(immediateButton);
+                    }
+                }, 100);
+                
+            }, 2000); // 等待2秒让弹窗加载
+        }
+        
+        function clickFlipButton(button) {
+            setStep('clicking_flip');
+            
+            // 高亮显示
+            button.classList.add('flip-btn-found');
+            
+            setTimeout(() => {
+                const clicked = clickElement(button, '点击"立即翻牌"按钮');
+                
+                if (clicked) {
+                    log(`✅ "立即翻牌"按钮点击成功`);
+                    
+                    // 等待结果
+                    setTimeout(() => {
+                        checkFinalResult();
+                    }, 4000); // 延长等待时间
+                } else {
+                    log(`❌ "立即翻牌"按钮点击失败`);
+                    
+                    // 直接检查结果
+                    setTimeout(() => {
+                        checkFinalResult();
+                    }, 2000);
+                }
+            }, 1000);
+        }
+        
+        // 检查最终结果
+        function checkFinalResult() {
+            setStep('checking_result');
+            
+            log(`📊 检查签到结果...`);
+            
+            // 方法1: 检查页面文本中的成功关键词
+            const pageText = document.body.textContent;
+            let successFound = false;
+            let foundKeyword = '';
+            
+            for (const keyword of CONFIG.successKeywords) {
+                if (pageText.includes(keyword)) {
+                    successFound = true;
+                    foundKeyword = keyword;
+                    break;
+                }
+            }
+            
+            if (successFound) {
+                log(`🎉 签到成功！检测到关键词: "${foundKeyword}"`);
+                showNotification('签到成功', '川润学堂签到完成！', 'success');
+                setStep('completed');
+                
+                // 自动关闭页面
+                autoClosePage();
+                return;
+            }
+            
+            // 方法2: 检查"去签到"按钮是否变为已签到状态
+            const signButton = findElementByXPath(CONFIG.signButtonXPath);
+            if (signButton) {
+                const buttonText = signButton.textContent || '';
+                const isDisabled = signButton.disabled || signButton.classList.contains('disabled');
+                
+                if (isDisabled || buttonText.includes('已签到') || buttonText.includes('已签')) {
+                    log(`✅ 签到按钮状态显示已签到`);
+                    showNotification('签到成功', '今天已经签到过了！', 'success');
+                    setStep('completed');
+                    
+                    // 自动关闭页面
+                    autoClosePage();
+                    return;
+                }
+            }
+            
+            // 方法3: 检查是否有弹窗关闭或奖励显示
+            const modals = document.querySelectorAll('.ant-modal, .el-dialog, .modal');
+            let hasOpenModal = false;
+            for (const modal of modals) {
+                if (isElementVisible(modal)) {
+                    hasOpenModal = true;
+                    break;
+                }
+            }
+            
+            // 如果没有打开的弹窗，且我们点击了翻牌按钮，可能已经成功了
+            if (!hasOpenModal && currentStep === 'clicking_flip') {
+                log(`✅ 弹窗已关闭，可能签到成功`);
+                showNotification('签到完成', '签到操作已完成', 'info');
+                setStep('completed');
+                
+                // 自动关闭页面
+                autoClosePage();
+                return;
+            }
+            
+            // 方法4: 检查是否有获得积分或奖励的提示
+            const rewardElements = document.querySelectorAll('.reward, .points, .success-message, .ant-message-success');
+            if (rewardElements.length > 0) {
+                for (const element of rewardElements) {
+                    if (isElementVisible(element)) {
+                        log(`✅ 检测到奖励/成功提示元素`);
+                        showNotification('签到成功', '检测到成功提示', 'success');
+                        setStep('completed');
+                        
+                        // 自动关闭页面
+                        autoClosePage();
+                        return;
+                    }
+                }
+            }
+            
+            log(`⚠️ 无法确定签到结果`);
+            showNotification('签到提示', '无法确定签到结果，请手动确认', 'info');
+            setStep('completed');
+        }
+        
+        // 添加控制按钮
+        function addControlButtons() {
+            const controlPanel = document.createElement('div');
+            controlPanel.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0, 0, 0, 0.85);
+                padding: 15px 20px;
+                border-radius: 10px;
+                z-index: 99998;
+                display: flex;
+                gap: 10px;
+                box-shadow: 0 5px 20px rgba(0,0,0,0.4);
+                border: 2px solid #9C27B0;
+            `;
+            
+            controlPanel.innerHTML = `
+                <button id="start-btn" style="padding: 10px 20px; background: #9C27B0; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; min-width: 120px;">开始签到</button>
+                <button id="retry-btn" style="padding: 10px 20px; background: #2196F3; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; min-width: 120px;">重新尝试</button>
+                <button id="debug-btn" style="padding: 10px 20px; background: #FF9800; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; min-width: 120px;">调试模式</button>
+                <button id="close-btn" style="padding: 10px 20px; background: #F44336; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; min-width: 120px;">关闭页面</button>
+            `;
+            
+            document.body.appendChild(controlPanel);
+            
+            document.getElementById('start-btn').addEventListener('click', () => {
+                isManualCheckIn = true;
+                checkInAttempts = 0;
+                startCheckInProcess();
+            });
+            
+            document.getElementById('retry-btn').addEventListener('click', () => {
+                isManualCheckIn = true;
+                checkInAttempts = 0;
+                startCheckInProcess();
+            });
+            
+            document.getElementById('debug-btn').addEventListener('click', () => {
+                isManualCheckIn = true;
+                log('🔧 进入调试模式');
+                showNotification('调试模式', '已启用详细调试信息', 'info');
+                
+                // 查找并显示所有相关信息
+                debugPageElements();
+            });
+            
+            document.getElementById('close-btn').addEventListener('click', () => {
+                log('🔄 手动关闭页面');
+                if (window.close && typeof window.close === 'function') {
+                    window.close();
+                } else {
+                    showNotification('提示', '无法关闭页面，请手动关闭标签页', 'info');
+                }
+            });
+        }
+        
+        // 调试函数
+        function debugPageElements() {
+            log('\n========== 调试信息 ==========');
+            
+            // 1. 查找所有包含"签到"的元素
+            const allElements = document.querySelectorAll('*');
+            const signElements = [];
+            
+            for (const element of allElements) {
+                if (element.textContent && element.textContent.includes('签到')) {
+                    signElements.push(element);
+                }
+            }
+            
+            log(`找到 ${signElements.length} 个包含"签到"的元素`);
+            
+            // 显示前10个
+            signElements.slice(0, 10).forEach((el, i) => {
+                log(`[${i+1}] ${el.tagName}.${el.className}: "${el.textContent.trim().substring(0, 50)}"`);
+            });
+            
+            // 2. 查找所有draw-sign-btn元素
+            const drawSignBtns = document.querySelectorAll('.draw-sign-btn, [class*="draw-sign-btn"]');
+            log(`找到 ${drawSignBtns.length} 个draw-sign-btn元素:`);
+            
+            drawSignBtns.forEach((btn, i) => {
+                const visible = isElementVisible(btn) ? '✅ 可见' : '❌ 隐藏';
+                log(`[${i+1}] ${btn.className} - ${visible}`);
+                log(`   HTML: ${btn.outerHTML.substring(0, 150)}...`);
+                log(`   位置: (${btn.offsetLeft}, ${btn.offsetTop}) 尺寸: ${btn.offsetWidth}x${btn.offsetHeight}`);
+            });
+            
+            // 3. 查找弹窗
+            const modals = document.querySelectorAll('.ant-modal, .el-dialog, .modal, .dialog');
+            log(`找到 ${modals.length} 个弹窗/模态框`);
+            
+            modals.forEach((modal, i) => {
+                const visible = isElementVisible(modal) ? '可见' : '隐藏';
+                log(`弹窗${i+1}: ${modal.className} - ${visible}`);
+            });
+        }
+        
+        // 页面加载完成后开始
+        log('📖 页面加载完成，等待3秒后开始');
+        
+        setTimeout(() => {
+            // 添加控制按钮
+            addControlButtons();
+            
+            // 自动开始签到流程
+            setTimeout(() => {
+                log('🚀 自动开始签到流程');
+                isManualCheckIn = false;
+                startCheckInProcess();
+            }, 2000);
+        }, 3000);
+    }
+    
+    // ========== OA页面逻辑 ==========
+    if (isOAPage) {
+        log('🏢 检测到OA页面，设置自动签到触发器');
+        
+        // 检查是否到签到时间
+        function isCheckInTime() {
+            const now = new Date();
+            const hour = now.getHours();
+            const minute = now.getMinutes();
+            
+            // 检查是否是上午9:00或下午17:30
+            return (hour === CONFIG.morningHour && minute === CONFIG.morningMinute) ||
+                   (hour === CONFIG.afternoonHour && minute === CONFIG.afternoonMinute);
+        }
+        
+        function checkAndSignIn() {
+            if (isCheckInTime()) {
+                log(`✅ 到达签到时间 ${new Date().toLocaleTimeString()}，打开签到页面`);
+                showNotification('川润学堂', '到达签到时间，正在为您打开签到页面...', 'info');
+                
+                GM_openInTab(CONFIG.checkInPage, {
+                    active: false,
+                    insert: true,
+                    setParent: true
+                }).then(tab => {
+                    log(`📄 签到页面已打开`);
+                    // 记录tab对象，如果需要可以用于关闭
+                    GM_setValue('checkInTabId', tab.id);
+                }).catch(error => {
+                    log(`❌ 打开签到页面失败: ${error}`);
+                    showNotification('签到失败', '无法打开签到页面', 'error');
+                });
+            }
+        }
+        
+        log('⏳ OA页面加载完成，等待2秒后检查');
+        setTimeout(checkAndSignIn, 2000);
+        
+        // 每分钟检查一次时间
+        setInterval(() => {
+            checkAndSignIn();
+        }, 60000);
+        
+        // 添加手动签到按钮
+        function addManualButton() {
+            if (document.getElementById('chuanrun-checkin-btn')) return;
+            
+            const button = document.createElement('button');
+            button.id = 'chuanrun-checkin-btn';
+            button.textContent = '📚 川润学堂签到';
+            button.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                left: 20px;
+                background: linear-gradient(90deg, #9C27B0, #7B1FA2);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 18px;
+                cursor: pointer;
+                z-index: 9999;
+                font-family: Arial, sans-serif;
+                font-size: 14px;
+                font-weight: bold;
+                box-shadow: 0 4px 12px rgba(156, 39, 176, 0.4);
+                transition: all 0.3s;
+            `;
+            
+            button.onmouseover = () => {
+                button.style.transform = 'translateY(-3px)';
+                button.style.boxShadow = '0 8px 20px rgba(156, 39, 176, 0.6)';
+            };
+            
+            button.onmouseout = () => {
+                button.style.transform = 'translateY(0)';
+                button.style.boxShadow = '0 4px 12px rgba(156, 39, 176, 0.4)';
+            };
+            
+            button.onclick = () => {
+                log('🖱️ 手动触发签到');
+                showNotification('川润学堂', '正在手动打开签到页面...', 'info');
+                
+                GM_openInTab(CONFIG.checkInPage, {
+                    active: true,
+                    insert: true
+                }).then(tab => {
+                    GM_setValue('checkInTabId', tab.id);
+                });
+            };
+            
+            document.body.appendChild(button);
+        }
+        
+        setTimeout(addManualButton, 3000);
+    }
+    
+})();
