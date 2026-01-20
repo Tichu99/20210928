@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         自动点餐系统 Pro (V9.0 多人队列+定时版)
 // @namespace    http://tampermonkey.net/
-// @version      9.0
+// @version      9.01
 // @description  OA系统自动点餐脚本，支持多人循环点餐，支持定时任务(13:20)，Layui深度适配
-// @author       Assistant
+// @author       太初
 // @match        https://oa.sccrun.com/*
 // @match        https://xcx.sccrun.com/*
 // @grant        GM_setValue
