@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         川润学堂自动签到 (定时双签到版)
+// @name         川润学堂自动签到 (通用适配版)
 // @namespace    https://oa.sccrun.com/
-// @version      8.31
-// @description  早上9:00和下午17:30各签到一次，不检查当天是否已签到
+// @version      8.4
+// @description  早上9:00和下午17:30各签到一次，自动适配不同页面结构
 // @author       太初
 // @match        https://oa.sccrun.com/wui/index.html*
 // @match        https://wp4ibmcqaaz02katf2ziqx720ufxp28w.study.moxueyuan.com/shopMall*
@@ -23,9 +23,6 @@
         // 页面URL
         oaPage: 'https://oa.sccrun.com/wui/index.html?#/main/workflow/listDoing?menuIds=1,13&menuPathIds=1,13&_key=w655ua',
         checkInPage: 'https://wp4ibmcqaaz02katf2ziqx720ufxp28w.study.moxueyuan.com/shopMall',
-        
-        // XPath路径 - 使用稳定的定位方式
-        signButtonXPath: '/html/body/div[2]/div/section/main/div/div[1]/div[2]/div[2]/div[2]/div[2]/div[1]/div[2]',
         
         // 翻牌按钮的多种定位方式（根据你的HTML优化）
         flipButtonSelectors: [
@@ -118,7 +115,7 @@
         if (logs.length > 150) logs.shift();
         
         if (CONFIG.debug) {
-            console.log(`%c[川润定时版]`, 'background: #9C27B0; color: white; padding: 2px 5px; border-radius: 3px;', ...args);
+            console.log(`%c[川润通用版]`, 'background: #9C27B0; color: white; padding: 2px 5px; border-radius: 3px;', ...args);
         }
         
         updateLogPanel();
@@ -153,7 +150,7 @@
         
         panel.innerHTML = `
             <div style="background: linear-gradient(90deg, #9C27B0, #7B1FA2); color: white; padding: 8px 12px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; cursor: move;">
-                <span>📋 签到日志 - 定时版</span>
+                <span>📋 签到日志 - 通用版</span>
                 <div style="display: flex; align-items: center;">
                     <span id="current-step" style="margin-right: 10px; font-size: 11px; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">准备中</span>
                     <button id="copy-logs" title="复制日志" style="margin-right: 5px; padding: 3px 8px; background: #7B1FA2; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">复制</button>
@@ -306,7 +303,6 @@
     }
     
     // ========== 存储管理 ==========
-    // 注释掉了当天签到检查功能，但保留存储函数以防其他用途
     function getTodayKey() {
         const today = new Date();
         return `checked_${today.getFullYear()}_${today.getMonth() + 1}_${today.getDate()}`;
@@ -327,6 +323,108 @@
             log(`XPath错误: ${error.message}`);
             return null;
         }
+    }
+    
+    // ========== 智能查找签到按钮 ==========
+    function findSignButton() {
+        log(`🔍 智能查找"去签到"按钮...`);
+        
+        // 方法1: 尝试多个常见的XPath路径
+        log(`方法1: 尝试多个XPath路径`);
+        const commonXPaths = [
+            // 原用户的XPath
+            '/html/body/div[2]/div/section/main/div/div[1]/div[2]/div[2]/div[2]/div[2]/div[1]/div[2]',
+            // 其他用户的XPath
+            '/html/body/div[1]/div/section/main/div/div[1]/div[2]/div[2]/div[2]/div[2]/div[1]/div[2]',
+            // 可能存在的其他变体
+            '//div[contains(@class, "cursor_pointer") and contains(@class, "a_link") and contains(text(), "去签到")]',
+            '//div[contains(@class, "f12") and contains(text(), "去签到")]',
+            '//div[contains(@class, "c-345376") and contains(text(), "去签到")]'
+        ];
+        
+        for (const xpath of commonXPaths) {
+            try {
+                const element = findElementByXPath(xpath);
+                if (element && isElementVisible(element) && isElementClickable(element)) {
+                    log(`✅ 通过XPath找到按钮: ${xpath}`);
+                    return element;
+                }
+            } catch (error) {
+                log(`⚠️ XPath查找失败: ${xpath} - ${error.message}`);
+            }
+        }
+        
+        // 方法2: 通过类名和文本内容组合查找
+        log(`方法2: 通过类名和文本内容查找`);
+        const buttonSelectors = [
+            // 根据你提供的HTML结构
+            'div.cursor_pointer.f12.a_link.c-345376',
+            'div[class*="cursor_pointer"][class*="a_link"]',
+            'div[data-v-5a557ca2]',
+            '[class*="cursor_pointer"]:has(> :contains("去签到"))'
+        ];
+        
+        for (const selector of buttonSelectors) {
+            try {
+                const elements = document.querySelectorAll(selector);
+                for (const element of elements) {
+                    if (element && isElementVisible(element) && isElementClickable(element) && 
+                        element.textContent && element.textContent.includes(CONFIG.signButtonText)) {
+                        log(`✅ 通过选择器找到按钮: ${selector}`);
+                        return element;
+                    }
+                }
+            } catch (error) {
+                log(`⚠️ 选择器查找失败: ${selector} - ${error.message}`);
+            }
+        }
+        
+        // 方法3: 通过文本内容查找（最通用）
+        log(`方法3: 通过文本内容"去签到"查找`);
+        const allElements = document.querySelectorAll('*');
+        const textMatches = [];
+        
+        for (const element of allElements) {
+            if (element.textContent && element.textContent.trim().includes(CONFIG.signButtonText)) {
+                textMatches.push(element);
+            }
+        }
+        
+        log(`通过文本找到 ${textMatches.length} 个匹配元素`);
+        
+        // 筛选可见且可点击的元素
+        for (const element of textMatches) {
+            if (isElementVisible(element) && isElementClickable(element)) {
+                log(`✅ 通过文本找到可见可点击的按钮: ${element.tagName}.${element.className}`);
+                log(`按钮HTML: ${element.outerHTML.substring(0, 200)}`);
+                return element;
+            }
+        }
+        
+        // 方法4: 查找所有可点击元素
+        log(`方法4: 查找所有可点击元素`);
+        const clickableElements = document.querySelectorAll('button, a, div, span, [onclick], [role="button"]');
+        for (const element of clickableElements) {
+            if (element.textContent && element.textContent.includes(CONFIG.signButtonText) &&
+                isElementVisible(element) && isElementClickable(element)) {
+                log(`✅ 在可点击元素中找到按钮: ${element.tagName}.${element.className}`);
+                return element;
+            }
+        }
+        
+        // 方法5: 查找所有包含cursor_pointer类的元素
+        log(`方法5: 查找所有cursor_pointer类元素`);
+        const cursorElements = document.querySelectorAll('[class*="cursor_pointer"]');
+        for (const element of cursorElements) {
+            if (element.textContent && element.textContent.includes(CONFIG.signButtonText) &&
+                isElementVisible(element) && isElementClickable(element)) {
+                log(`✅ 在cursor_pointer元素中找到按钮: ${element.tagName}.${element.className}`);
+                return element;
+            }
+        }
+        
+        log(`❌ 未找到"去签到"按钮`);
+        return null;
     }
     
     // ========== 优化的翻牌按钮查找函数 ==========
@@ -716,7 +814,7 @@
     const isCheckInPage = window.location.href.includes('/shopMall');
     
     if (isCheckInPage) {
-        log('🎯 检测到签到页面 - 定时版启动');
+        log('🎯 检测到签到页面 - 通用版启动');
         
         // 添加CSS样式
         GM_addStyle(`
@@ -802,42 +900,21 @@
         function findAndClickSignButton() {
             setStep('finding_sign');
             
-            log(`🔍 查找"去签到"按钮`);
-            const signButton = findElementByXPath(CONFIG.signButtonXPath);
+            log(`🔍 智能查找"去签到"按钮`);
+            const signButton = findSignButton();
             
             if (!signButton) {
                 log(`❌ 未找到"去签到"按钮`);
                 
-                // 备用方法：通过文本查找
-                const allElements = document.querySelectorAll('*');
-                let foundButton = null;
-                
-                for (const element of allElements) {
-                    if (element.textContent && element.textContent.trim() === CONFIG.signButtonText) {
-                        if (isElementVisible(element)) {
-                            foundButton = element;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!foundButton) {
-                    log(`❌ 备用方法也未找到按钮`);
-                    
-                    // 重试
-                    setTimeout(() => {
-                        log(`⏰ ${CONFIG.retryDelay/1000}秒后重试`);
-                        findAndClickSignButton();
-                    }, CONFIG.retryDelay);
-                    return;
-                }
-                
-                log(`✅ 通过备用方法找到按钮`);
-                clickSignButton(foundButton);
+                // 重试
+                setTimeout(() => {
+                    log(`⏰ ${CONFIG.retryDelay/1000}秒后重试`);
+                    findAndClickSignButton();
+                }, CONFIG.retryDelay);
                 return;
             }
             
-            log(`✅ 通过XPath找到"去签到"按钮`);
+            log(`✅ 找到"去签到"按钮`);
             clickSignButton(signButton);
         }
         
@@ -1013,7 +1090,7 @@
             }
             
             // 方法2: 检查"去签到"按钮是否变为已签到状态
-            const signButton = findElementByXPath(CONFIG.signButtonXPath);
+            const signButton = findSignButton();
             if (signButton) {
                 const buttonText = signButton.textContent || '';
                 const isDisabled = signButton.disabled || signButton.classList.contains('disabled');
