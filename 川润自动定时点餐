@@ -18,6 +18,7 @@
 
 (function() {
     'use strict';
+    let isPaused = false; // 暂停标志
 
     // ================= 配置区域 =================
     const CONFIG = {
@@ -98,7 +99,19 @@
     }
 
     // ================= 核心工具函数 =================
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    async function checkPaused() {
+        if (isPaused) {
+            while (isPaused) {
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+    }
+
+    const sleep = async (ms) => {
+        await checkPaused();
+        await new Promise(r => setTimeout(r, ms));
+        await checkPaused();
+    };
 
     // 递归获取 iframe 文档
     function getAllDocuments(rootWindow = window) {
@@ -146,11 +159,13 @@
     }
 
     async function waitForElement(selectors, textContent = null) {
+        await checkPaused();
         const start = Date.now();
         if (!Array.isArray(selectors)) selectors = [selectors];
         log(`🔍 查找: ${textContent || selectors[0]}`);
 
         while (Date.now() - start < CONFIG.TIMEOUTS.MAX_WAIT) {
+            await checkPaused();
             const allCtx = getAllDocuments(window);
             for (let ctx of allCtx) {
                 const target = findInSpecificDocument(ctx.doc, selectors, textContent);
@@ -190,6 +205,79 @@
     }
 
     // ================= 业务逻辑：设置与队列 =================
+
+    function createStopButton() {
+        if (document.getElementById('gt-stop-btn')) return;
+        const btn = document.createElement('button');
+        btn.id = 'gt-stop-btn';
+        btn.innerHTML = '🛑 停止运行';
+        btn.style.cssText = `
+            position: fixed; top: 120px; right: 20px; z-index: 2147483648;
+            padding: 10px 20px; background: linear-gradient(135deg, #ff7675, #d63031);
+            color: white; border: none; border-radius: 50px; font-weight: bold;
+            box-shadow: 0 4px 15px rgba(214, 48, 49, 0.4); cursor: move;
+            font-size: 15px; transition: transform 0.1s, box-shadow 0.2s; user-select: none;
+        `;
+        
+        // 拖拽逻辑
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        btn.onmousedown = (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = btn.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            btn.style.cursor = 'grabbing';
+            // 移除 right 定位，改为 left/top 以便控制
+            btn.style.right = 'auto';
+            btn.style.left = initialLeft + 'px';
+            btn.style.top = initialTop + 'px';
+        };
+
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            btn.style.left = (initialLeft + dx) + 'px';
+            btn.style.top = (initialTop + dy) + 'px';
+        };
+
+        const onMouseUp = () => {
+            isDragging = false;
+            btn.style.cursor = 'move';
+        };
+        
+        // 绑定全局事件以防甩脱
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+
+        // 点击事件 (如果是拖拽则不触发点击)
+        let isClick = true;
+        btn.onclick = (e) => {
+            if (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5) return; // 视为拖拽
+            
+            isPaused = !isPaused; // 切换状态
+            
+            if (isPaused) {
+                btn.innerHTML = '▶️ 继续运行';
+                btn.style.background = '#0984e3'; // 蓝色表示可以继续
+                btn.style.boxShadow = 'none';
+                log('⏸️ 脚本已暂停', 'warn');
+            } else {
+                btn.innerHTML = '🛑 停止运行';
+                btn.style.background = 'linear-gradient(135deg, #ff7675, #d63031)'; // 红色表示可以停止
+                btn.style.boxShadow = '0 4px 15px rgba(214, 48, 49, 0.4)';
+                log('▶️ 脚本继续执行', 'success');
+            }
+        };
+
+        btn.onmouseenter = () => { if(!btn.disabled) btn.style.transform = 'scale(1.05)'; };
+        btn.onmouseleave = () => { if(!btn.disabled) btn.style.transform = 'scale(1)'; };
+        document.body.appendChild(btn);
+    }
 
     function getNamesList() {
         const str = GM_getValue('CONFIG_NAMES', CONFIG.DEFAULT_NAMES);
@@ -301,12 +389,17 @@
         // 读取状态
         const state = GM_getValue('ORDER_QUEUE', { active: false, queue: [] });
         if (!state.active) return;
+        
+        createStopButton(); // 添加停止按钮
 
-        // 创建调试面板
-        const debugPanel = document.createElement('div');
-        debugPanel.id = 'gt-debug-panel';
-        debugPanel.style.display = 'block';
-        document.body.appendChild(debugPanel);
+        // 创建调试面板 (防止递归时重复创建导致叠加变黑)
+        let debugPanel = document.getElementById('gt-debug-panel');
+        if (!debugPanel) {
+            debugPanel = document.createElement('div');
+            debugPanel.id = 'gt-debug-panel';
+            debugPanel.style.display = 'block';
+            document.body.appendChild(debugPanel);
+        }
 
         // 检查是否还有人需要点餐
         if (state.queue.length === 0) {
@@ -325,20 +418,25 @@
         try {
             await executeSingleOrder(currentPerson);
             
-            // 成功后，移除该人员并刷新
+            // 成功后，移除该人员
             state.queue.shift(); // 移除第一个
             GM_setValue('ORDER_QUEUE', state);
             
-            log('✅ 本次成功，准备下一位...', 'success');
-            await sleep(2000);
-            window.location.reload(); // 刷新页面以重置状态
+            log('✅ 本次成功，3秒后继续下一位...', 'success');
+            await sleep(3000);
+            processOrderQueue(); // 递归调用，不再刷新页面
 
         } catch (error) {
+            if (error.message && error.message.includes("用户手动停止")) {
+                log('🛑 脚本已响应停止指令，操作终止', 'error');
+                return; // 直接退出
+            }
             log(`❌ ${currentPerson} 点餐失败: ${error.message}`, 'error');
-            // 失败也移除？还是重试？这里选择移除防止卡死
+            // 失败移除，防止死循环
             state.queue.shift();
             GM_setValue('ORDER_QUEUE', state);
-            setTimeout(() => window.location.reload(), 3000);
+            await sleep(3000);
+            processOrderQueue(); // 失败也继续尝试下一个
         }
     }
 
@@ -346,18 +444,32 @@
     async function executeSingleOrder(targetName) {
         await sleep(CONFIG.TIMEOUTS.PAGE_LOAD);
 
-        // 1. 菜单
-        const menuBtn = await waitForElement(['[menu-id="2000"]', 'span'], '订单管理');
-        await safeClick(menuBtn, '订单管理');
-        
-        let subMenuBtn = null;
-        try {
-            subMenuBtn = await waitForElement(['a', 'span', 'li'], '加班餐');
-        } catch(e) {
-            await safeClick(menuBtn, '重试展开'); // 容错重试
-            subMenuBtn = await waitForElement(['a', 'span', 'li'], '加班餐');
+        // 1. 菜单 (修复版)
+        // 先在所有文档中搜索 "加班餐"，检测是否已经可见
+        let subMenuTarget = null;
+        const allDocs = getAllDocuments(window);
+        for (let ctx of allDocs) {
+            // 必须传 ['a', 'span', 'li'] 作为选择器，'加班餐' 作为文本
+            const btn = findInSpecificDocument(ctx.doc, ['a', 'span', 'li'], '加班餐');
+            if (btn && btn.offsetParent !== null) { // 元素存在且可见
+                subMenuTarget = btn;
+                subMenuTarget._ownerWindow = ctx.win; // 绑定上下文
+                break;
+            }
         }
-        await safeClick(subMenuBtn, '加班餐菜单');
+
+        if (subMenuTarget) {
+            log('👉 菜单已展开，直接点击');
+            await safeClick(subMenuTarget, '加班餐菜单');
+        } else {
+            log('📂 需要展开菜单...');
+            const menuBtn = await waitForElement(['[menu-id="2000"]', 'span'], '订单管理');
+            await safeClick(menuBtn, '订单管理');
+            
+            // 展开后再找一次
+            const subMenuBtn = await waitForElement(['a', 'span', 'li'], '加班餐');
+            await safeClick(subMenuBtn, '加班餐菜单');
+        }
 
         // 2. 添加
         const addBtn = await waitForElement(['button[key="overtime_meal_add"]'], '加班餐添加');
@@ -377,13 +489,26 @@
         const searchBtn = await waitForElement(['button#query'], '搜索');
         await safeClick(searchBtn, '搜索');
 
-        // 6. 精准勾选
-        log('定位勾选...'); await sleep(2000);
-        const checkIcon = await waitForElement([
-            `//tr[contains(., '${targetName}')]//i[contains(@class, 'layui-icon-ok')]`
-        ]);
-        const currentDoc = checkIcon.ownerDocument; // 锁定上下文
-        await safeClick(checkIcon, '勾选');
+        // 6. 精准勾选 (多重策略 - 针对第三层弹窗)
+        log('定位勾选...'); await sleep(1500);
+        
+        // 核心思路：
+        // 1. 用户提供的精确路径 (包含 layui-col-md9 结构，这是弹窗特有的左右布局)
+        // 2. 结合名字过滤的弹窗特有路径
+        // 3. 兜底策略
+        const checkTarget = await waitForElement([
+            // 策略A：用户提供的绝对路径 (修正为 CSS 选择器适配)
+            `body > div.layui-row.layui-col-space15 > div.layui-col-md9 > div > div > div > div > div.layui-table-box > div.layui-table-body.layui-table-main > table > tbody > tr > td.layui-table-col-special > div > div > i`,
+            
+            // 策略B：基于名字 + 弹窗特有结构 (layui-col-md9 是弹窗右侧内容区的特征)
+            `//div[contains(@class, 'layui-col-md9')]//tr[contains(., '${targetName}')]//div[contains(@class, 'layui-form-checkbox')]`,
+            
+            // 策略C：基于名字 + 简单的弹窗结构
+            `//div[contains(@class, 'layui-col-md9')]//tr[contains(., '${targetName}')]//i[contains(@class, 'layui-icon-ok')]`
+        ], '勾选框 (第三层)');
+
+        const currentDoc = checkTarget.ownerDocument; // 锁定上下文
+        await safeClick(checkTarget, '勾选');
 
         // 7. 确定 (上下文锁定)
         log('寻找确定...'); await sleep(1000);
