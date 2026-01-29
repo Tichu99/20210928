@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         川润学堂自动签到 (通用适配版)
 // @namespace    https://oa.sccrun.com/
-// @version      8.4
+// @version      8.5
 // @description  早上9:00和下午17:30各签到一次，自动适配不同页面结构
 // @author       太初
 // @match        https://oa.sccrun.com/wui/index.html*
@@ -11,6 +11,7 @@
 // @grant        GM_getValue
 // @grant        GM_openInTab
 // @grant        GM_addStyle
+// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @license      MIT
 // ==/UserScript==
@@ -96,6 +97,82 @@
     let mutationObserver = null;
     let isManualCheckIn = false; // 标记是否为手动签到
     
+    // ========== 主题系统 ==========
+    const THEMES = {
+        purple: {
+            name: '💜 经典紫',
+            primary: '#9C27B0',
+            secondary: '#7B1FA2',
+            bg: 'rgba(0, 0, 0, 0.95)',
+            text: '#E1BEE7',
+            border: '#9C27B0'
+        },
+        morandi_blue: {
+            name: '🌫️ 莫兰迪蓝',
+            primary: '#77969A',
+            secondary: '#5B7A7D',
+            bg: 'rgba(40, 45, 48, 0.95)',
+            text: '#D1D9DB',
+            border: '#77969A'
+        },
+        morandi_green: {
+            name: '🌿 莫兰迪绿',
+            primary: '#8b968d',
+            secondary: '#6e7a70',
+            bg: 'rgba(40, 45, 40, 0.95)',
+            text: '#E0E8E1',
+            border: '#8b968d'
+        },
+        morandi_pink: {
+            name: '🌸 莫兰迪粉',
+            primary: '#cfa9a3',
+            secondary: '#b38e89',
+            bg: 'rgba(50, 40, 40, 0.95)',
+            text: '#EBDDD9',
+            border: '#cfa9a3'
+        }
+    };
+
+    // 获取当前主题
+    function getCurrentTheme() {
+        const themeKey = GM_getValue('theme_key', 'purple');
+        return THEMES[themeKey] || THEMES.purple;
+    }
+
+    // 切换主题
+    function switchTheme(key) {
+        GM_setValue('theme_key', key);
+        showNotification('主题切换', `已切换为 ${THEMES[key].name}`, 'success');
+        
+        const theme = THEMES[key];
+        
+        // 更新日志面板
+        const panel = document.getElementById('chuanrun-log-panel');
+        if (panel) {
+            updateLogPanelStyle(panel, theme);
+        }
+        
+        // 更新手动按钮 (OA页面)
+        const manualBtn = document.getElementById('chuanrun-checkin-btn');
+        if (manualBtn) {
+            manualBtn.style.background = `linear-gradient(90deg, ${theme.primary}, ${theme.secondary})`;
+            manualBtn.style.boxShadow = `0 4px 12px ${theme.primary}66`;
+            // 更新hover效果需要重新绑定或使用CSS变量，这里简化处理，直接修改当前样式
+        }
+    }
+
+    // 注册菜单命令
+    function registerMenuCommands() {
+        for (const [key, theme] of Object.entries(THEMES)) {
+            GM_registerMenuCommand(`🎨 切换主题: ${theme.name}`, () => {
+                switchTheme(key);
+            });
+        }
+    }
+    
+    // 初始化菜单
+    registerMenuCommands();
+
     // ========== 日志系统 ==========
     function log(...args) {
         const timestamp = new Date().toLocaleTimeString();
@@ -124,41 +201,71 @@
     }
     
     // ========== 日志面板 ==========
+    function updateLogPanelStyle(panel, theme) {
+        panel.style.background = theme.bg;
+        panel.style.color = theme.text;
+        panel.style.borderColor = theme.border;
+        panel.style.boxShadow = `0 5px 20px ${theme.border}80`; // 50% opacity
+
+        const header = panel.querySelector('.panel-header');
+        if (header) {
+            header.style.background = `linear-gradient(90deg, ${theme.primary}, ${theme.secondary})`;
+        }
+        
+        const copyBtn = document.getElementById('copy-logs');
+        if (copyBtn) copyBtn.style.background = theme.secondary;
+        
+        const notification = document.querySelector('.chuanrun-notification');
+        if (notification) {
+             // 通知样式可能也需要更新，但这里简化处理
+        }
+    }
+
     function createLogPanel() {
         const existingPanel = document.getElementById('chuanrun-log-panel');
         if (existingPanel) existingPanel.remove();
+        
+        const theme = getCurrentTheme();
+        const savedPos = GM_getValue('log_panel_pos', { top: '10px', right: '10px' });
         
         const panel = document.createElement('div');
         panel.id = 'chuanrun-log-panel';
         panel.style.cssText = `
             position: fixed;
-            top: 10px;
-            right: 10px;
             width: 550px;
             height: 400px;
-            background: rgba(0, 0, 0, 0.95);
-            color: #E1BEE7;
             font-family: 'Courier New', monospace;
             font-size: 12px;
             z-index: 100000;
-            border: 3px solid #9C27B0;
+            border: 3px solid;
             border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 5px 20px rgba(156, 39, 176, 0.5);
             resize: both;
         `;
         
+        // 应用位置
+        if (savedPos.left) {
+            panel.style.left = savedPos.left;
+            panel.style.top = savedPos.top;
+        } else {
+            panel.style.top = savedPos.top;
+            panel.style.right = savedPos.right;
+        }
+
         panel.innerHTML = `
-            <div style="background: linear-gradient(90deg, #9C27B0, #7B1FA2); color: white; padding: 8px 12px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; cursor: move;">
+            <div class="panel-header" style="color: white; padding: 8px 12px; font-weight: bold; display: flex; justify-content: space-between; align-items: center; cursor: move;">
                 <span>📋 签到日志 - 通用版</span>
                 <div style="display: flex; align-items: center;">
                     <span id="current-step" style="margin-right: 10px; font-size: 11px; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 3px;">准备中</span>
-                    <button id="copy-logs" title="复制日志" style="margin-right: 5px; padding: 3px 8px; background: #7B1FA2; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">复制</button>
+                    <button id="copy-logs" title="复制日志" style="margin-right: 5px; padding: 3px 8px; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">复制</button>
                     <button id="close-panel" title="关闭面板" style="padding: 3px 8px; background: #666; color: white; border: none; border-radius: 3px; font-size: 11px; cursor: pointer;">×</button>
                 </div>
             </div>
             <div id="log-content" style="padding: 10px; height: calc(100% - 40px); overflow-y: auto; line-height: 1.4; white-space: pre-wrap; font-size: 11px;"></div>
         `;
+        
+        // 应用当前主题
+        updateLogPanelStyle(panel, theme);
         
         document.body.appendChild(panel);
         
@@ -224,9 +331,11 @@
     function makeDraggable(element, handle) {
         let isDragging = false;
         let startX, startY, startLeft, startTop;
+        let hasMoved = false; // 标记是否发生了移动
         
         handle.addEventListener('mousedown', (e) => {
             isDragging = true;
+            hasMoved = false;
             startX = e.clientX;
             startY = e.clientY;
             
@@ -234,6 +343,7 @@
             startLeft = rect.left;
             startTop = rect.top;
             
+            // 防止默认拖拽行为
             e.preventDefault();
         });
         
@@ -243,14 +353,42 @@
             const deltaX = e.clientX - startX;
             const deltaY = e.clientY - startY;
             
+            // 只有移动超过一定距离才算拖拽
+            if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+                hasMoved = true;
+                element.dataset.isDragged = 'true'; // 标记为正在拖拽
+            }
+            
             element.style.left = (startLeft + deltaX) + 'px';
             element.style.top = (startTop + deltaY) + 'px';
-            element.style.right = 'auto';
+            element.style.right = 'auto'; // 清除right属性避免冲突
             element.style.bottom = 'auto';
         });
         
         document.addEventListener('mouseup', () => {
-            isDragging = false;
+             if (isDragging) {
+                isDragging = false;
+                
+                if (hasMoved) {
+                    // 保存位置
+                    const pos = {
+                        left: element.style.left,
+                        top: element.style.top
+                    };
+                    
+                    // 根据元素ID决定保存的键名
+                    const key = element.id === 'chuanrun-checkin-btn' ? 'manual_btn_pos' : 'log_panel_pos';
+                    GM_setValue(key, pos);
+                    log('📍 位置已保存');
+                    
+                    // 延迟移除拖拽标记，防止触发click
+                    setTimeout(() => {
+                        element.dataset.isDragged = 'false';
+                    }, 100);
+                } else {
+                    element.dataset.isDragged = 'false';
+                }
+            }
         });
     }
     
@@ -1311,38 +1449,63 @@
         function addManualButton() {
             if (document.getElementById('chuanrun-checkin-btn')) return;
             
+            const theme = getCurrentTheme();
+            const savedPos = GM_getValue('manual_btn_pos', { bottom: '20px', left: '20px' });
+            
             const button = document.createElement('button');
             button.id = 'chuanrun-checkin-btn';
             button.textContent = '📚 川润学堂签到';
+            
+            // 基础样式
             button.style.cssText = `
                 position: fixed;
-                bottom: 20px;
-                left: 20px;
-                background: linear-gradient(90deg, #9C27B0, #7B1FA2);
-                color: white;
+                background: linear-gradient(90deg, ${theme.primary}, ${theme.secondary});
+                color: ${theme.name.includes('粉') || theme.name.includes('绿') ? '#fff' : 'white'};
                 border: none;
                 border-radius: 8px;
                 padding: 12px 18px;
-                cursor: pointer;
+                cursor: move;
                 z-index: 9999;
                 font-family: Arial, sans-serif;
                 font-size: 14px;
                 font-weight: bold;
-                box-shadow: 0 4px 12px rgba(156, 39, 176, 0.4);
-                transition: all 0.3s;
+                box-shadow: 0 4px 12px ${theme.primary}66;
+                transition: transform 0.1s, box-shadow 0.3s;
+                user-select: none;
             `;
             
+            // 应用位置
+            if (savedPos.top) {
+                button.style.top = savedPos.top;
+                button.style.left = savedPos.left;
+                button.style.bottom = 'auto';
+            } else {
+                button.style.bottom = savedPos.bottom;
+                button.style.left = savedPos.left;
+            }
+            
             button.onmouseover = () => {
-                button.style.transform = 'translateY(-3px)';
-                button.style.boxShadow = '0 8px 20px rgba(156, 39, 176, 0.6)';
+                const currentTheme = getCurrentTheme(); // 获取实时主题
+                button.style.transform = 'translateY(-2px)';
+                button.style.boxShadow = `0 8px 20px ${currentTheme.primary}99`;
             };
             
             button.onmouseout = () => {
+                const currentTheme = getCurrentTheme();
                 button.style.transform = 'translateY(0)';
-                button.style.boxShadow = '0 4px 12px rgba(156, 39, 176, 0.4)';
+                button.style.boxShadow = `0 4px 12px ${currentTheme.primary}66`;
             };
             
-            button.onclick = () => {
+            // 点击事件处理
+            button.addEventListener('click', (e) => {
+                // 如果是拖拽操作，不触发点击
+                if (button.dataset.isDragged === 'true') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Ignore click due to drag');
+                    return;
+                }
+                
                 log('🖱️ 手动触发签到');
                 showNotification('川润学堂', '正在手动打开签到页面...', 'info');
                 
@@ -1352,9 +1515,12 @@
                 }).then(tab => {
                     GM_setValue('checkInTabId', tab.id);
                 });
-            };
+            });
             
             document.body.appendChild(button);
+            
+            // 启用拖拽
+            makeDraggable(button, button);
         }
         
         setTimeout(addManualButton, 3000);
