@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         自动点餐系统 Pro (V9.0 多人队列+定时版)
 // @namespace    http://tampermonkey.net/
-// @version      9.02
+// @version      9.14
 // @description  OA系统自动点餐脚本，支持多人循环点餐，支持定时任务(13:20)，Layui深度适配
 // @author       太初
-// @match        https://oa.sccrun.com/*
+// @match        https://oa.sccrun.com/wui/index.html*
 // @match        https://xcx.sccrun.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -13,10 +13,11 @@
 // @grant        GM_setClipboard
 // @grant        GM_registerMenuCommand
 // @grant        window.close
+// @grant        GM_xmlhttpRequest
 // @run-at       document-end
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
     let isPaused = false; // 暂停标志
 
@@ -24,7 +25,7 @@
     const CONFIG = {
         URLS: { OA: 'oa.sccrun.com', ORDER: 'xcx.sccrun.com' },
         DEFAULT_NAMES: '郭涛', // 默认名单
-        SCHEDULE_TIME: '13:20', // 定时时间
+        DEFAULT_TIME: '13:20', // 默认定时时间
         TIMEOUTS: {
             STEP_DELAY: 1500,
             MAX_WAIT: 25000,
@@ -33,6 +34,8 @@
         COLORS: {
             MAIN: 'linear-gradient(135deg, #A8C3CE, #B5C9C1)', // 莫兰迪蓝
             WARN: 'linear-gradient(135deg, #E8D3C7, #E0C9B8)', // 莫兰迪粉
+            SETTING: 'linear-gradient(135deg, #d9ded8, #ebc0fd)', // (已弃用)
+            SETTING_NEW: 'linear-gradient(135deg, #e0e0e0, #cfd9df)', // 莫兰迪灰 (柔和不显眼)
             TEXT: '#4a4a4a'
         }
     };
@@ -43,15 +46,24 @@
             #gt-control-panel {
                 position: fixed; top: 10px; left: 50%; transform: translateX(-50%) scale(0.85);
                 z-index: 2147483647; display: flex; gap: 8px; padding: 10px 20px;
-                background: rgba(255, 255, 255, 0.95); border-radius: 20px;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.15); backdrop-filter: blur(5px);
+                /* 背景改为用户OA同款蓝色，或者直接透明以融入顶部导航栏 */
+                background: transparent; 
+                /* 稍微加一点点边框或者阴影，否则你也找不到哪里可以拖动 */
+                border: 1px solid rgba(255, 255, 255, 0.3);
+                border-radius: 20px;
+                cursor: move; user-select: none;
             }
             .gt-btn {
                 border: none; padding: 8px 16px; border-radius: 8px; font-size: 14px;
                 font-weight: 600; color: ${CONFIG.COLORS.TEXT}; cursor: pointer;
                 background: ${CONFIG.COLORS.MAIN}; transition: all 0.2s;
             }
-            .gt-btn:hover { transform: translateY(-2px); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+            .gt-btn-setting {
+                 /* 独立的设置按钮颜色: 莫兰迪灰 */
+                 background: ${CONFIG.COLORS.SETTING_NEW};
+                 color: #666; /* 字体稍微淡一点 */
+            }
+            .gt-btn:hover { transform: translateY(-2px); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
             .gt-btn:active { transform: scale(0.95); }
             .gt-btn-warn { background: ${CONFIG.COLORS.WARN}; }
             
@@ -124,9 +136,9 @@
                     if (iframe.contentWindow && iframe.contentWindow.document) {
                         docs = docs.concat(getAllDocuments(iframe.contentWindow));
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
-        } catch (e) {}
+        } catch (e) { }
         return docs;
     }
 
@@ -153,7 +165,7 @@
                     }
                 }
                 if (target && target.offsetParent !== null) return target;
-            } catch (e) {}
+            } catch (e) { }
         }
         return null;
     }
@@ -182,7 +194,7 @@
     async function safeClick(element, desc) {
         log(`👆 点击: ${desc}`);
         element.classList.add('gt-highlight');
-        element.scrollIntoView({behavior: "smooth", block: "center"});
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
         await sleep(500);
         element.click();
         await sleep(1000);
@@ -195,7 +207,7 @@
         await sleep(300);
         let win = element._ownerWindow || window;
         if (win && win.$) { // Layui/jQuery 注入
-            try { win.$(element).val(value).trigger('change').trigger('input'); } catch(e){}
+            try { win.$(element).val(value).trigger('change').trigger('input'); } catch (e) { }
         }
         element.focus();
         element.value = value;
@@ -218,7 +230,7 @@
             box-shadow: 0 4px 15px rgba(214, 48, 49, 0.4); cursor: move;
             font-size: 15px; transition: transform 0.1s, box-shadow 0.2s; user-select: none;
         `;
-        
+
         // 拖拽逻辑
         let isDragging = false;
         let startX, startY, initialLeft, initialTop;
@@ -249,7 +261,7 @@
             isDragging = false;
             btn.style.cursor = 'move';
         };
-        
+
         // 绑定全局事件以防甩脱
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
@@ -258,9 +270,9 @@
         let isClick = true;
         btn.onclick = (e) => {
             if (Math.abs(e.clientX - startX) > 5 || Math.abs(e.clientY - startY) > 5) return; // 视为拖拽
-            
+
             isPaused = !isPaused; // 切换状态
-            
+
             if (isPaused) {
                 btn.innerHTML = '▶️ 继续运行';
                 btn.style.background = '#0984e3'; // 蓝色表示可以继续
@@ -274,8 +286,8 @@
             }
         };
 
-        btn.onmouseenter = () => { if(!btn.disabled) btn.style.transform = 'scale(1.05)'; };
-        btn.onmouseleave = () => { if(!btn.disabled) btn.style.transform = 'scale(1)'; };
+        btn.onmouseenter = () => { if (!btn.disabled) btn.style.transform = 'scale(1.05)'; };
+        btn.onmouseleave = () => { if (!btn.disabled) btn.style.transform = 'scale(1)'; };
         document.body.appendChild(btn);
     }
 
@@ -283,6 +295,58 @@
         const str = GM_getValue('CONFIG_NAMES', CONFIG.DEFAULT_NAMES);
         // 支持中文顿号、英文逗号、空格分隔
         return str.split(/[、,，\s]+/).filter(n => n.trim());
+    }
+
+    // 检测是否为法定工作日 (调用 timor.tech 免费API)
+    function checkIsWorkDay() {
+        return new Promise((resolve) => {
+            const date = new Date();
+            const dateStr = `${date.getFullYear()}-${(date.getMonth()+1).toString().padStart(2,'0')}-${date.getDate().toString().padStart(2,'0')}`;
+            const cacheKey = `WORKDAY_CACHE_${dateStr}`;
+            
+            // 1. 检查今日缓存
+            const cached = GM_getValue(cacheKey, null);
+            if (cached !== null) {
+                log(`📅 [缓存] 日期检查: ${dateStr} 是 ${cached ? '✅ 工作日' : '☕ 节假日/周末'}`);
+                return resolve(cached);
+            }
+
+            // 2. 请求 API
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: `https://timor.tech/api/holiday/info/${dateStr}`,
+                timeout: 5000,
+                onload: function(response) {
+                    try {
+                        const res = JSON.parse(response.responseText);
+                        // holiday: true表示放假, false表示工作(包含调休)
+                        // API文档: http://timor.tech/api/holiday
+                        const isWork = (res.code === 0 && res.holiday === false);
+                        
+                        GM_setValue(cacheKey, isWork);
+                        log(`📅 [网络] 日期检查: ${dateStr} 是 ${isWork ? '✅ 工作日' : '☕ 节假日/周末'}`);
+                        resolve(isWork);
+                    } catch (e) {
+                        log('⚠️ 日期API解析失败，降级为普通周一至周五判断', 'warn');
+                        fallbackCheck(resolve);
+                    }
+                },
+                onerror: function() {
+                    log('⚠️ 日期API请求失败，降级为普通周一至周五判断', 'warn');
+                    fallbackCheck(resolve);
+                },
+                ontimeout: function() {
+                    log('⚠️ 日期API超时，降级为普通周一至周五判断', 'warn');
+                    fallbackCheck(resolve);
+                }
+            });
+        });
+
+        function fallbackCheck(resolve) {
+            const day = new Date().getDay();
+            const isWeekDay = day >= 1 && day <= 5;
+            resolve(isWeekDay);
+        }
     }
 
     function showSettingsModal() {
@@ -293,9 +357,14 @@
         modal.id = 'gt-settings-modal';
         modal.innerHTML = `
             <div class="gt-modal-content">
-                <h3 style="margin-top:0">⚙️ 自动点餐设置</h3>
+                <h3 style="margin-top:0; cursor:move; user-select:none;">⚙️ 自动点餐设置 (按住标题拖动)</h3>
+                
                 <label class="gt-label">点餐人员名单 (用“、”分隔):</label>
                 <textarea id="gt-names-input" class="gt-input" rows="4">${GM_getValue('CONFIG_NAMES', CONFIG.DEFAULT_NAMES)}</textarea>
+                
+                <label class="gt-label">每天定时启动时间 (格式 HH:mm):</label>
+                <input type="time" id="gt-time-input" class="gt-input" value="${GM_getValue('CONFIG_TIME', CONFIG.DEFAULT_TIME)}">
+
                 <div style="text-align:right; margin-top:15px;">
                     <button id="gt-save-config" class="gt-btn">保存并关闭</button>
                     <button id="gt-cancel-config" class="gt-btn" style="background:#eee;color:#333;margin-left:10px">取消</button>
@@ -304,26 +373,144 @@
         `;
         document.body.appendChild(modal);
 
+        // --- 拖拽逻辑 ---
+        const header = modal.querySelector('h3');
+        const content = modal.querySelector('.gt-modal-content');
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            content.style.left = (initialLeft + dx) + 'px';
+            content.style.top = (initialTop + dy) + 'px';
+        };
+
+        const onMouseUp = () => {
+            isDragging = false;
+            header.style.cursor = 'move';
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+
+        header.onmousedown = (e) => {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+
+            const rect = content.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+
+            // 切换为绝对定位以支持移动
+            content.style.position = 'absolute';
+            content.style.margin = '0';
+            content.style.left = initialLeft + 'px';
+            content.style.top = initialTop + 'px';
+
+            header.style.cursor = 'grabbing';
+            e.preventDefault();
+
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+        };
+
+        // --- 按钮事件 ---
         document.getElementById('gt-save-config').onclick = () => {
-            const val = document.getElementById('gt-names-input').value;
-            GM_setValue('CONFIG_NAMES', val);
-            alert('✅ 设置已保存！\n当前名单: ' + getNamesList().join(' -> '));
+            const names = document.getElementById('gt-names-input').value;
+            const time = document.getElementById('gt-time-input').value;
+            
+            if (!time.match(/^\d{2}:\d{2}$/)) {
+                return alert('⚠️ 时间格式不正确，请使用 HH:mm 格式');
+            }
+
+            GM_setValue('CONFIG_NAMES', names);
+            GM_setValue('CONFIG_TIME', time);
+            
+            alert(`✅ 设置已保存！\n\n👥 名单: ${getNamesList().join(' -> ')}\n⏰ 定时: ${time}`);
             modal.remove();
         };
         document.getElementById('gt-cancel-config').onclick = () => modal.remove();
     }
 
+
     // 注册油猴菜单
     GM_registerMenuCommand("⚙️ 设置人员名单", showSettingsModal);
 
     // ================= 业务逻辑：OA 页面 (控制台) =================
-    
+
+    // ================= 业务逻辑：OA 页面 (控制台) =================
+
+    // ================= 业务逻辑：OA 页面 (控制台) =================
+
     function initOA() {
+        // 如果面板已存在，只需处理显示/隐藏
         if (document.getElementById('gt-control-panel')) return;
 
         const panel = document.createElement('div');
         panel.id = 'gt-control-panel';
-        
+        // 增加 title 提示，告知用户可以拖动
+        panel.title = "按住空白处可拖动位置";
+        panel.id = 'gt-control-panel';
+
+        // --- 读取历史位置 ---
+        const savedPos = GM_getValue('PANEL_POS', null);
+
+        if (savedPos) {
+            panel.style.left = savedPos.left;
+            panel.style.top = savedPos.top;
+            panel.style.transform = 'scale(0.85)'; // 移除默认的 translateX 居中，保留缩放
+        }
+
+        // --- 拖拽逻辑 ---
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        panel.onmousedown = (e) => {
+            if (e.target.tagName === 'BUTTON') return; // 点击按钮时不拖动
+            
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            
+            const rect = panel.getBoundingClientRect();
+            initialLeft = rect.left;
+            initialTop = rect.top;
+            
+            // 锁定位置并移除居中变换，保留缩放
+            panel.style.transform = 'scale(0.85)';
+            panel.style.left = initialLeft + 'px';
+            panel.style.top = initialTop + 'px';
+            panel.style.cursor = 'grabbing';
+            e.preventDefault();
+        };
+
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            panel.style.left = (initialLeft + dx) + 'px';
+            panel.style.top = (initialTop + dy) + 'px';
+        };
+
+        const onMouseUp = () => {
+            if(isDragging) {
+                isDragging = false;
+                panel.style.cursor = 'move';
+                
+                // 保存位置
+                GM_setValue('PANEL_POS', {
+                    left: panel.style.left,
+                    top: panel.style.top
+                });
+            }
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+
+
         // 1. 启动按钮
         const startBtn = document.createElement('button');
         startBtn.className = 'gt-btn';
@@ -332,36 +519,53 @@
 
         // 2. 设置按钮
         const configBtn = document.createElement('button');
-        configBtn.className = 'gt-btn';
+        configBtn.className = 'gt-btn gt-btn-setting'; // 应用新类名
         configBtn.textContent = '⚙️ 名单设置';
-        configBtn.style.background = '#74b9ff';
+        // configBtn.style.background = '#74b9ff'; // 移除旧的内联样式
         configBtn.onclick = showSettingsModal;
 
         panel.appendChild(startBtn);
         panel.appendChild(configBtn);
         document.body.appendChild(panel);
 
-        // 3. 启动定时任务
-        startScheduler();
+        // 3. 启动定时任务 (如果尚未启动)
+        // startScheduler() 移至全局初始化中调用，不再依赖 initOA
+        // 这样即使面板隐藏，后台定时任务依然有效（避免错过时间）
     }
 
+    let schedulerStarted = false;
     function startScheduler() {
-        log('⏳ 定时任务监控中 (目标 13:20)...');
-        setInterval(() => {
-            const now = new Date();
-            const day = now.getDay();
-            const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+        if (schedulerStarted) return;
+        schedulerStarted = true;
 
-            // 周一到周五 (1-5) 且 时间匹配
-            if (day >= 1 && day <= 5 && timeStr === CONFIG.SCHEDULE_TIME) {
+        const getTargetTime = () => GM_getValue('CONFIG_TIME', CONFIG.DEFAULT_TIME);
+        log(`⏳ 定时任务监控中 (目标 ${getTargetTime()})...`);
+        
+        setInterval(async () => {
+            const now = new Date();
+            const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+            const targetTime = getTargetTime();
+
+            // 检查时间匹配
+            if (timeStr === targetTime) {
                 // 防止一分钟内重复触发
                 const lastRun = GM_getValue('LAST_RUN_DATE', '');
                 const todayStr = now.toDateString();
-                
+
                 if (lastRun !== todayStr) {
-                    log('⏰ 到达 13:20，开始自动点餐！');
-                    GM_setValue('LAST_RUN_DATE', todayStr);
-                    startQueueProcess();
+                    log(`⏰ 时间匹配 (${targetTime})，正在检查是否为法定工作日...`);
+                    
+                    // 检查是否为工作日
+                    const isWorkDay = await checkIsWorkDay();
+                    
+                    if (isWorkDay) {
+                        log('✅ 确认为法定工作日，开始任务！');
+                        GM_setValue('LAST_RUN_DATE', todayStr);
+                        startQueueProcess();
+                    } else {
+                        log('☕ 检测到今日为法定节假日/周末，已自动跳过任务。');
+                        GM_setValue('LAST_RUN_DATE', todayStr); // 标记今天已运行过(跳过)，避免重复检查
+                    }
                 }
             }
         }, 30000); // 30秒检查一次
@@ -377,7 +581,7 @@
             current: null,
             active: true
         });
-        
+
         // 打开/跳转到点餐页面
         log(`🚀 启动任务，总人数: ${names.length}`);
         GM_openInTab(`https://${CONFIG.URLS.ORDER}/Home/Index`, { active: true, insert: true });
@@ -389,7 +593,7 @@
         // 读取状态
         const state = GM_getValue('ORDER_QUEUE', { active: false, queue: [] });
         if (!state.active) return;
-        
+
         createStopButton(); // 添加停止按钮
 
         // 创建调试面板 (防止递归时重复创建导致叠加变黑)
@@ -405,7 +609,7 @@
         if (state.queue.length === 0) {
             log('🎉 所有人员点餐完成！', 'success');
             GM_setValue('ORDER_QUEUE', { active: false, queue: [] });
-            
+
             // 显示关闭按钮
             showCloseButton();
             return;
@@ -417,11 +621,11 @@
 
         try {
             await executeSingleOrder(currentPerson);
-            
+
             // 成功后，移除该人员
             state.queue.shift(); // 移除第一个
             GM_setValue('ORDER_QUEUE', state);
-            
+
             log('✅ 本次成功，3秒后继续下一位...', 'success');
             await sleep(3000);
             processOrderQueue(); // 递归调用，不再刷新页面
@@ -465,7 +669,7 @@
             log('📂 需要展开菜单...');
             const menuBtn = await waitForElement(['[menu-id="2000"]', 'span'], '订单管理');
             await safeClick(menuBtn, '订单管理');
-            
+
             // 展开后再找一次
             const subMenuBtn = await waitForElement(['a', 'span', 'li'], '加班餐');
             await safeClick(subMenuBtn, '加班餐菜单');
@@ -491,7 +695,7 @@
 
         // 6. 精准勾选 (多重策略 - 针对第三层弹窗)
         log('定位勾选...'); await sleep(1500);
-        
+
         // 核心思路：
         // 1. 用户提供的精确路径 (包含 layui-col-md9 结构，这是弹窗特有的左右布局)
         // 2. 结合名字过滤的弹窗特有路径
@@ -499,10 +703,10 @@
         const checkTarget = await waitForElement([
             // 策略A：用户提供的绝对路径 (修正为 CSS 选择器适配)
             `body > div.layui-row.layui-col-space15 > div.layui-col-md9 > div > div > div > div > div.layui-table-box > div.layui-table-body.layui-table-main > table > tbody > tr > td.layui-table-col-special > div > div > i`,
-            
+
             // 策略B：基于名字 + 弹窗特有结构 (layui-col-md9 是弹窗右侧内容区的特征)
             `//div[contains(@class, 'layui-col-md9')]//tr[contains(., '${targetName}')]//div[contains(@class, 'layui-form-checkbox')]`,
-            
+
             // 策略C：基于名字 + 简单的弹窗结构
             `//div[contains(@class, 'layui-col-md9')]//tr[contains(., '${targetName}')]//i[contains(@class, 'layui-icon-ok')]`
         ], '勾选框 (第三层)');
@@ -548,13 +752,18 @@
 
         const host = window.location.hostname;
         if (host.includes(CONFIG.URLS.OA)) {
-            // OA 页面：负责显示控制台和定时任务
+            // OA 页面：只要是 wui/index.html 就运行，不再限制 hash
+            // 检测页面加载完成
             const t = setInterval(() => {
                 if (document.body) {
                     clearInterval(t);
                     initOA();
                 }
             }, 500);
+            
+            // 启动定时任务
+            startScheduler();
+
         } else if (host.includes(CONFIG.URLS.ORDER)) {
             // 点餐页面：负责执行队列
             processOrderQueue();
