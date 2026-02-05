@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         自动点餐系统 Pro (V9.0 多人队列+定时版)
 // @namespace    http://tampermonkey.net/
-// @version      9.14
+// @version      9.15
 // @description  OA系统自动点餐脚本，支持多人循环点餐，支持定时任务(13:20)，Layui深度适配
 // @author       太初
 // @match        https://oa.sccrun.com/wui/index.html*
@@ -543,7 +543,8 @@
         
         setInterval(async () => {
             const now = new Date();
-            const timeStr = `${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}`;
+            // 修复：小时也要补零，确保与用户设置的 HH:mm 格式一致 (例如 09:30 而非 9:30)
+            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
             const targetTime = getTargetTime();
 
             // 检查时间匹配
@@ -589,6 +590,46 @@
 
     // ================= 业务逻辑：点餐页面 (执行端) =================
 
+    /**
+     * 等待页面完全加载 (DOM + 关键元素可见)
+     * 解决首次打开点餐页面进不去的问题
+     */
+    async function waitForPageReady(maxWaitMs = 15000) {
+        const startTime = Date.now();
+        log('⏳ 等待点餐页面完全加载...');
+        
+        // 1. 等待 document.readyState 变为 complete
+        while (document.readyState !== 'complete') {
+            if (Date.now() - startTime > maxWaitMs) {
+                log('⚠️ 页面加载超时，尝试继续执行...', 'warn');
+                break;
+            }
+            await sleep(300);
+        }
+        
+        // 2. 等待页面中至少有可交互的元素 (例如菜单或按钮)
+        let retries = 0;
+        const maxRetries = 20; // 最多重试20次，每次500ms
+        while (retries < maxRetries) {
+            // 检查是否有菜单相关元素
+            const hasMenu = document.querySelector('[menu-id]') || 
+                           document.querySelector('.layui-nav') ||
+                           document.querySelector('.layui-side-menu') ||
+                           document.body.innerText.includes('订单管理');
+            
+            if (hasMenu) {
+                log('✅ 页面加载完成，元素已就绪', 'success');
+                return true;
+            }
+            
+            retries++;
+            await sleep(500);
+        }
+        
+        log('⚠️ 未检测到预期元素，但仍尝试继续执行', 'warn');
+        return false;
+    }
+
     async function processOrderQueue() {
         // 读取状态
         const state = GM_getValue('ORDER_QUEUE', { active: false, queue: [] });
@@ -604,6 +645,9 @@
             debugPanel.style.display = 'block';
             document.body.appendChild(debugPanel);
         }
+        
+        // 等待页面完全加载后再继续 (解决首次打开进不去的问题)
+        await waitForPageReady();
 
         // 检查是否还有人需要点餐
         if (state.queue.length === 0) {
